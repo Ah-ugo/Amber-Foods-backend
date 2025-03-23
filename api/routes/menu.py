@@ -14,6 +14,9 @@ from datetime import datetime
 
 router = APIRouter()
 
+def convert_empty_to_none(value: Optional[str]) -> Optional[str]:
+    return None if value == "" else value
+
 
 # Category endpoints
 @router.get("/categories", response_model=List[Category])
@@ -427,6 +430,12 @@ async def create_menu_item(
     return created_item
 
 
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Body
+from typing import Any, Optional, List, Union
+import json
+
+# ... other imports ...
+
 @router.put("/items/{item_id}", response_model=MenuItem)
 async def update_menu_item(
         item_id: str,
@@ -436,39 +445,51 @@ async def update_menu_item(
         category_id: Optional[str] = Form(None),
         is_available: Optional[bool] = Form(None),
         is_featured: Optional[bool] = Form(None),
-        images: Optional[List[str]] = Form(None),  # Changed to accept strings
-        image_files: Optional[List[UploadFile]] = File(None),  # Added separate parameter for files
-        current_user: UserInDB = Depends(get_current_admin_user)
+        images: Optional[str] = Form(None),
+        # Use Form instead of File for image_files to handle empty strings
+        image_files: Optional[str] = Form(None),
+        current_user: UserInDB = Depends(get_current_admin_user),
 ):
     """
     Update an existing menu item (all fields optional).
-    Can handle both string inputs and file uploads for images.
+    Convert empty strings to None.
     """
     items_collection = get_menu_items_collection()
     categories_collection = get_menu_categories_collection()
 
-    # Find existing item
-    try:
-        existing_item = items_collection.find_one({"_id": ObjectId(item_id)})
-    except:
-        raise HTTPException(status_code=404, detail="Invalid item ID format")
+    # Convert empty strings to None
+    name = convert_empty_to_none(name)
+    description = convert_empty_to_none(description)
+    price = convert_empty_to_none(price)
+    category_id = convert_empty_to_none(category_id)
+    images_str = convert_empty_to_none(images)
 
-    if not existing_item:
-        raise HTTPException(status_code=404, detail="Item not found")
-
+    # Initialize update data
     update_data = {}
 
-    # Validate and update fields, ignoring empty strings
-    if name:
+    # Handle existing images parameter
+    if images_str is not None:
+        try:
+            # Try to parse as JSON if it's a string representation of a list
+            images_data = json.loads(images_str)
+            update_data["images"] = images_data
+        except json.JSONDecodeError:
+            # If it's not valid JSON, it might be a single image or empty
+            if images_str == "":
+                update_data["images"] = []
+            else:
+                update_data["images"] = [images_str]
+
+    if name is not None:
         update_data["name"] = name
-    if description:
+    if description is not None:
         update_data["description"] = description
-    if price and price.strip():  # Ensure price is not an empty string
+    if price is not None:
         try:
             update_data["price"] = float(price)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid price format")
-    if category_id:
+    if category_id is not None:
         try:
             category = categories_collection.find_one({"_id": ObjectId(category_id)})
             if not category:
@@ -477,32 +498,11 @@ async def update_menu_item(
         except:
             raise HTTPException(status_code=400, detail="Invalid category ID format")
 
+    # Handle boolean values
     if is_available is not None:
         update_data["is_available"] = is_available
     if is_featured is not None:
         update_data["is_featured"] = is_featured
-
-    # Handle image uploads if provided
-    uploaded_images = []
-    if image_files:
-        valid_files = [f for f in image_files if f and f.filename]
-        if valid_files:
-            for i, image in enumerate(valid_files):
-                file_content = await image.read()
-                upload_result = await cloudinary_service.upload_image(
-                    file_data=file_content,
-                    folder="menu_items",
-                    public_id=f"item_{item_id}_{i}"
-                )
-                uploaded_images.append({
-                    "public_id": upload_result["public_id"],
-                    "url": upload_result["url"],
-                    "width": upload_result["width"],
-                    "height": upload_result["height"]
-                })
-
-            if uploaded_images:
-                update_data["images"] = uploaded_images
 
     # Only update if there's data to update
     if update_data:
@@ -510,6 +510,71 @@ async def update_menu_item(
         items_collection.update_one({"_id": ObjectId(item_id)}, {"$set": update_data})
 
     # Fetch updated item
+    try:
+        updated_item = items_collection.find_one({"_id": ObjectId(item_id)})
+        if not updated_item:
+            raise HTTPException(status_code=404, detail="Menu item not found")
+    except:
+        raise HTTPException(status_code=404, detail="Menu item not found")
+
+    updated_item["_id"] = str(updated_item["_id"])
+
+    return updated_item
+
+
+@router.post("/items/{item_id}/upload-images", response_model=MenuItem)
+async def upload_menu_item_images(
+        item_id: str,
+        image_files: List[UploadFile] = File(...),  # Required here, but endpoint itself is optional to use
+        current_user: UserInDB = Depends(get_current_admin_user),
+):
+    """
+    Upload images for an existing menu item
+    """
+    items_collection = get_menu_items_collection()
+
+    # Find existing item
+    try:
+        existing_item = items_collection.find_one({"_id": ObjectId(item_id)})
+        if not existing_item:
+            raise HTTPException(status_code=404, detail="Menu item not found")
+    except:
+        raise HTTPException(status_code=404, detail="Menu item not found")
+
+    # Handle image uploads
+    uploaded_images = []
+    for i, image in enumerate(image_files):
+        if image.filename:  # Ensure it's not an empty file
+            file_content = await image.read()
+
+            # Upload to Cloudinary
+            upload_result = await cloudinary_service.upload_image(
+                file_data=file_content,
+                folder="menu_items",
+                public_id=f"item_{item_id}_{i}"
+            )
+
+            uploaded_images.append({
+                "public_id": upload_result["public_id"],
+                "url": upload_result["url"],
+                "width": upload_result["width"],
+                "height": upload_result["height"]
+            })
+
+    # Update item with new images
+    if uploaded_images:
+        # Get existing images
+        existing_images = existing_item.get("images", [])
+        # Append new images
+        all_images = existing_images + uploaded_images
+
+        # Update in database
+        items_collection.update_one(
+            {"_id": ObjectId(item_id)},
+            {"$set": {"images": all_images, "updated_at": datetime.utcnow()}}
+        )
+
+    # Get updated item
     updated_item = items_collection.find_one({"_id": ObjectId(item_id)})
     updated_item["_id"] = str(updated_item["_id"])
 
