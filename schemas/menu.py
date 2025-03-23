@@ -30,7 +30,7 @@ class MenuItemBase(BaseModel):
     name: str
     description: Optional[str] = None
     price: float
-    category_id: str
+    category_ids: Optional[List[str]] = []  # Changed default to empty list
     is_available: bool = True
     is_featured: bool = False
 
@@ -43,7 +43,7 @@ class MenuItemUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     price: Optional[float] = None
-    category_id: Optional[str] = None
+    category_ids: Optional[List[str]] = None
     is_available: Optional[bool] = None
     is_featured: Optional[bool] = None
 
@@ -59,4 +59,5 @@ class MenuItem(MenuItemBase):
 
 
 class MenuItemWithCategory(MenuItem):
-    category: Category
+    # Changed from single category to list of categories
+    categories: List[Category] = []

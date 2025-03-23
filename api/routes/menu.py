@@ -206,13 +206,29 @@ async def get_menu_items(
     filter_query = {}
 
     if category:
-        filter_query["category_id"] = category
+        # Match items where the category is in the category_ids array
+        # or for backward compatibility, where category_id equals the category
+        filter_query["$or"] = [
+            {"category_ids": category},
+            {"category_id": category}  # For backward compatibility
+        ]
 
     if search:
-        filter_query["$or"] = [
-            {"name": {"$regex": search, "$options": "i"}},
-            {"description": {"$regex": search, "$options": "i"}}
-        ]
+        search_query = {"$regex": search, "$options": "i"}
+        if "$or" in filter_query:
+            filter_query["$and"] = [
+                {"$or": filter_query["$or"]},
+                {"$or": [
+                    {"name": search_query},
+                    {"description": search_query}
+                ]}
+            ]
+            del filter_query["$or"]
+        else:
+            filter_query["$or"] = [
+                {"name": search_query},
+                {"description": search_query}
+            ]
 
     if featured is not None:
         filter_query["is_featured"] = featured
@@ -225,12 +241,30 @@ async def get_menu_items(
     for item in items:
         item["_id"] = str(item["_id"])
 
-        # Get category
-        category = categories_collection.find_one({"_id": ObjectId(item["category_id"])})
-        if category:
-            category["_id"] = str(category["_id"])
-            item["category"] = category
+        # Get categories - handle both new format (category_ids) and old format (category_id)
+        categories = []
 
+        # Check for new format first
+        if "category_ids" in item and item["category_ids"]:
+            for cat_id in item["category_ids"]:
+                try:
+                    category = categories_collection.find_one({"_id": ObjectId(cat_id)})
+                    if category:
+                        category["_id"] = str(category["_id"])
+                        categories.append(category)
+                except:
+                    continue
+        # Fallback to old format
+        elif "category_id" in item and item["category_id"]:
+            try:
+                category = categories_collection.find_one({"_id": ObjectId(item["category_id"])})
+                if category:
+                    category["_id"] = str(category["_id"])
+                    categories.append(category)
+            except:
+                pass
+
+        item["categories"] = categories
         result.append(item)
 
     return result
@@ -261,11 +295,30 @@ async def get_menu_item(item_id: str) -> Any:
     # Convert ObjectId to string
     item["_id"] = str(item["_id"])
 
-    # Get category
-    category = categories_collection.find_one({"_id": ObjectId(item["category_id"])})
-    if category:
-        category["_id"] = str(category["_id"])
-        item["category"] = category
+    # Get categories - handle both new format (category_ids) and old format (category_id)
+    categories = []
+
+    # Check for new format first
+    if "category_ids" in item and item["category_ids"]:
+        for cat_id in item["category_ids"]:
+            try:
+                category = categories_collection.find_one({"_id": ObjectId(cat_id)})
+                if category:
+                    category["_id"] = str(category["_id"])
+                    categories.append(category)
+            except:
+                continue
+    # Fallback to old format
+    elif "category_id" in item and item["category_id"]:
+        try:
+            category = categories_collection.find_one({"_id": ObjectId(item["category_id"])})
+            if category:
+                category["_id"] = str(category["_id"])
+                categories.append(category)
+        except:
+            pass
+
+    item["categories"] = categories
 
     return item
 
@@ -345,7 +398,7 @@ async def create_menu_item(
         name: Optional[str] = Form(None),
         description: Optional[str] = Form(None),
         price: Optional[float] = Form(None),
-        category_id: Optional[str] = Form(None),
+        category_ids: Optional[str] = Form(None),  # Changed to str since it's coming as a string
         is_available: Optional[bool] = Form(None),
         is_featured: Optional[bool] = Form(None),
         images: List[UploadFile] = File(None),
@@ -357,22 +410,36 @@ async def create_menu_item(
     items_collection = get_menu_items_collection()
     categories_collection = get_menu_categories_collection()
 
-    # Validate category if category_id is provided
-    category = None
-    if category_id:
-        try:
-            category = categories_collection.find_one({"_id": ObjectId(category_id)})
-        except:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Category not found"
-            )
+    # Parse category_ids - handle different formats
+    parsed_category_ids = []
+    if category_ids:
+        # If category_ids is already a list, use it directly
+        if isinstance(category_ids, list):
+            parsed_category_ids = category_ids
+        else:
+            # Try to parse as JSON first
+            try:
+                parsed_category_ids = json.loads(category_ids)
+                if not isinstance(parsed_category_ids, list):
+                    parsed_category_ids = [parsed_category_ids]
+            except (json.JSONDecodeError, TypeError):
+                # If not valid JSON, check if it's a comma-separated string
+                if ',' in category_ids:
+                    parsed_category_ids = [cat_id.strip() for cat_id in category_ids.split(',')]
+                else:
+                    # Treat as a single ID
+                    parsed_category_ids = [category_ids]
 
-        if not category:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Category not found"
-            )
+    # Validate all categories exist
+    valid_category_ids = []
+    for cat_id in parsed_category_ids:
+        try:
+            category = categories_collection.find_one({"_id": ObjectId(cat_id)})
+            if category:
+                valid_category_ids.append(cat_id)
+        except:
+            # Skip invalid IDs
+            continue
 
     # Prepare item data
     now = datetime.utcnow()
@@ -380,7 +447,7 @@ async def create_menu_item(
         "name": name,
         "description": description,
         "price": price,
-        "category_id": category_id,
+        "category_ids": valid_category_ids,  # Store as array
         "is_available": is_available,
         "is_featured": is_featured,
         "images": [],
@@ -430,24 +497,17 @@ async def create_menu_item(
     return created_item
 
 
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Body
-from typing import Any, Optional, List, Union
-import json
-
-# ... other imports ...
-
 @router.put("/items/{item_id}", response_model=MenuItem)
 async def update_menu_item(
         item_id: str,
         name: Optional[str] = Form(None),
         description: Optional[str] = Form(None),
         price: Optional[str] = Form(None),
-        category_id: Optional[str] = Form(None),
+        category_ids: Optional[str] = Form(None),  # Changed to str since it's coming as a string
         is_available: Optional[bool] = Form(None),
         is_featured: Optional[bool] = Form(None),
         images: Optional[str] = Form(None),
-        # Use Form instead of File for image_files to handle empty strings
-        image_files: Optional[str] = Form(None),
+        image_files: Optional[str] = Form(None),  # Changed to Form to avoid validation errors
         current_user: UserInDB = Depends(get_current_admin_user),
 ):
     """
@@ -461,16 +521,50 @@ async def update_menu_item(
     name = convert_empty_to_none(name)
     description = convert_empty_to_none(description)
     price = convert_empty_to_none(price)
-    category_id = convert_empty_to_none(category_id)
+    category_ids_str = convert_empty_to_none(category_ids)
     images_str = convert_empty_to_none(images)
 
     # Initialize update data
     update_data = {}
 
-    # Handle existing images parameter
+    # Handle category_ids
+    if category_ids_str is not None:
+        parsed_category_ids = []
+
+        # If category_ids is already a list, use it directly
+        if isinstance(category_ids_str, list):
+            parsed_category_ids = category_ids_str
+        else:
+            # Try to parse as JSON first
+            try:
+                parsed_category_ids = json.loads(category_ids_str)
+                if not isinstance(parsed_category_ids, list):
+                    parsed_category_ids = [parsed_category_ids]
+            except (json.JSONDecodeError, TypeError):
+                # If not valid JSON, check if it's a comma-separated string
+                if ',' in category_ids_str:
+                    parsed_category_ids = [cat_id.strip() for cat_id in category_ids_str.split(',')]
+                else:
+                    # Treat as a single ID
+                    parsed_category_ids = [category_ids_str]
+
+        # Validate all categories exist
+        valid_category_ids = []
+        for cat_id in parsed_category_ids:
+            try:
+                category = categories_collection.find_one({"_id": ObjectId(cat_id)})
+                if category:
+                    valid_category_ids.append(cat_id)
+            except:
+                # Skip invalid IDs
+                continue
+
+        update_data["category_ids"] = valid_category_ids
+
+    # Handle images parameter
     if images_str is not None:
         try:
-            # Try to parse as JSON if it's a string representation of a list
+            # Try to parse as JSON
             images_data = json.loads(images_str)
             update_data["images"] = images_data
         except json.JSONDecodeError:
@@ -489,14 +583,6 @@ async def update_menu_item(
             update_data["price"] = float(price)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid price format")
-    if category_id is not None:
-        try:
-            category = categories_collection.find_one({"_id": ObjectId(category_id)})
-            if not category:
-                raise HTTPException(status_code=404, detail="Category not found")
-            update_data["category_id"] = category_id
-        except:
-            raise HTTPException(status_code=400, detail="Invalid category ID format")
 
     # Handle boolean values
     if is_available is not None:
@@ -609,3 +695,43 @@ async def delete_menu_item(
     items_collection.delete_one({"_id": ObjectId(item_id)})
 
     return {"message": "Menu item deleted successfully"}
+
+
+@router.post("/migrate-categories", status_code=status.HTTP_200_OK)
+async def migrate_menu_item_categories(
+        current_user: UserInDB = Depends(get_current_admin_user)
+) -> Any:
+    """
+    Migrate menu items from single category_id to multiple category_ids
+    """
+    items_collection = get_menu_items_collection()
+
+    # Find all items with category_id but without category_ids
+    items_to_migrate = items_collection.find({
+        "category_id": {"$exists": True},
+        "$or": [
+            {"category_ids": {"$exists": False}},
+            {"category_ids": {"$size": 0}}
+        ]
+    })
+
+    migration_count = 0
+    for item in items_to_migrate:
+        category_id = item.get("category_id")
+        if category_id:
+            # Update the item to use category_ids
+            items_collection.update_one(
+                {"_id": item["_id"]},
+                {
+                    "$set": {
+                        "category_ids": [category_id],
+                        "updated_at": datetime.utcnow()
+                    }
+                }
+            )
+            migration_count += 1
+
+    return {
+        "message": f"Successfully migrated {migration_count} menu items to use multiple categories",
+        "migrated_count": migration_count
+    }
