@@ -340,12 +340,30 @@ async def get_best_selling_items(limit: int = 10) -> Any:
     for item in items:
         item["_id"] = str(item["_id"])
 
-        # Get category
-        category = categories_collection.find_one({"_id": ObjectId(item["category_id"])})
-        if category:
-            category["_id"] = str(category["_id"])
-            item["category"] = category
+        # Get categories - handle both new format (category_ids) and old format (category_id)
+        categories = []
 
+        # Check for new format first
+        if "category_ids" in item and item["category_ids"]:
+            for cat_id in item["category_ids"]:
+                try:
+                    category = categories_collection.find_one({"_id": ObjectId(cat_id)})
+                    if category:
+                        category["_id"] = str(category["_id"])
+                        categories.append(category)
+                except:
+                    continue
+        # Fallback to old format
+        elif "category_id" in item and item["category_id"]:
+            try:
+                category = categories_collection.find_one({"_id": ObjectId(item["category_id"])})
+                if category:
+                    category["_id"] = str(category["_id"])
+                    categories.append(category)
+            except:
+                pass
+
+        item["categories"] = categories
         result.append(item)
 
     return result
@@ -376,17 +394,24 @@ async def get_refreshing_drinks(limit: int = 10) -> Any:
         # Return empty list if no drinks category
         return []
 
-    # Get items in drinks category
-    items = list(items_collection.find({"category_id": str(drinks_category["_id"])}).limit(limit))
+    drinks_category_id = str(drinks_category["_id"])
+
+    # Get items in drinks category - check both new and old format
+    items = list(items_collection.find({
+        "$or": [
+            {"category_ids": drinks_category_id},
+            {"category_id": drinks_category_id}
+        ]
+    }).limit(limit))
 
     # Convert ObjectId to string and add category info
     result = []
     for item in items:
         item["_id"] = str(item["_id"])
 
-        # Add category
+        # Add categories
         drinks_category["_id"] = str(drinks_category["_id"])
-        item["category"] = drinks_category
+        item["categories"] = [drinks_category]
 
         result.append(item)
 
