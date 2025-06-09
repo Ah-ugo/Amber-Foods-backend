@@ -38,6 +38,30 @@ async def get_reviews(
     return reviews
 
 
+@router.get("/my-reviews", response_model=List[Review])
+async def get_current_user_reviews(
+        current_user: UserInDB = Depends(get_current_user),
+        skip: int = 0,
+        limit: int = 100
+) -> Any:
+    """
+    Get all reviews created by the current user
+    """
+    reviews_collection = get_reviews_collection()
+
+    # Get reviews for current user
+    reviews = list(reviews_collection.find({"user_id": current_user.id})
+                   .sort("created_at", -1)
+                   .skip(skip)
+                   .limit(limit))
+
+    # Convert ObjectId to string
+    for review in reviews:
+        review["_id"] = str(review["_id"])
+
+    return reviews
+
+
 @router.get("/items/{menu_item_id}", response_model=List[Review])
 async def get_menu_item_reviews(
         menu_item_id: str,
