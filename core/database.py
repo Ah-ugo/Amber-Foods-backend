@@ -70,3 +70,6 @@ def get_addresses_collection():
 
 def get_reviews_collection():
     return mongodb.get_collection("reviews")
+
+def get_notifications_collection():
+    return mongodb.get_collection("notifications")

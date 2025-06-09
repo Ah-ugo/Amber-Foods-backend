@@ -1,28 +1,62 @@
 import os
-
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Request, BackgroundTasks
 from typing import Any, Dict
 from core.config import settings
-from core.database import get_payments_collection, get_orders_collection
+from core.database import get_payments_collection, get_orders_collection, get_notifications_collection
 from api.deps import get_current_user
 from schemas.user import UserInDB
+from schemas.notification import NotificationCreate, NotificationType
+from schemas.order import PaymentStatus
 import httpx
 from bson import ObjectId
 from datetime import datetime
 import secrets
-
-router = APIRouter()
 from dotenv import load_dotenv
 
 load_dotenv()
 
-
 PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY")
 
+router = APIRouter()
+
+def create_payment_notification(
+    user_id: str,
+    order_id: str,
+    payment_status: str,
+    reference: str,
+    notifications_collection: Any
+):
+    """
+    Helper function to create a notification for payment-related events
+    """
+    status_messages = {
+        "PENDING": ("Payment Initiated", f"Your payment for order #{order_id} (Ref: {reference}) is being processed."),
+        "PAID": ("Payment Successful", f"Your payment for order #{order_id} (Ref: {reference}) was successful."),
+        "FAILED": ("Payment Failed", f"Your payment for order #{order_id} (Ref: {reference}) failed. Please try again.")
+    }
+
+    title, message = status_messages.get(payment_status, ("Payment Update", f"Your payment for order #{order_id} (Ref: {reference}) has an update: {payment_status}."))
+
+    notification_data = NotificationCreate(
+        user_id=user_id,
+        title=title,
+        message=message,
+        type=NotificationType.SYSTEM,
+        order_id=order_id,
+        is_read=False
+    )
+
+    now = datetime.utcnow()
+    notifications_collection.insert_one({
+        **notification_data.dict(),
+        "created_at": now,
+        "updated_at": now
+    })
 
 @router.post("/paystack/initialize")
 async def initialize_payment(
         order_id: str,
+        background_tasks: BackgroundTasks,
         current_user: UserInDB = Depends(get_current_user)
 ) -> Any:
     """
@@ -30,6 +64,7 @@ async def initialize_payment(
     """
     orders_collection = get_orders_collection()
     payments_collection = get_payments_collection()
+    notifications_collection = get_notifications_collection()
 
     # Check if order exists and belongs to user
     try:
@@ -65,7 +100,7 @@ async def initialize_payment(
             "https://api.paystack.co/transaction/initialize",
             json={
                 "email": current_user.email,
-                "amount": int(order["total_amount"] * 100),  # Amount in kobo (smallest currency unit)
+                "amount": int(order["total_amount"] * 100),  # Amount in kobo
                 "reference": reference,
                 "callback_url": f"https://amberfoods.onrender.com/api/payments/paystack/callback",
                 "metadata": {
@@ -119,16 +154,26 @@ async def initialize_payment(
         }}
     )
 
+    # Create notification for payment initialization
+    background_tasks.add_task(
+        create_payment_notification,
+        user_id=current_user.id,
+        order_id=order_id,
+        payment_status="PENDING",
+        reference=reference,
+        notifications_collection=notifications_collection
+    )
+
     return {
         "success": True,
         "authorization_url": data["data"]["authorization_url"],
         "reference": reference
     }
 
-
 @router.get("/paystack/verify/{reference}")
 async def verify_payment(
         reference: str,
+        background_tasks: BackgroundTasks,
         current_user: UserInDB = Depends(get_current_user)
 ) -> Any:
     """
@@ -136,6 +181,7 @@ async def verify_payment(
     """
     payments_collection = get_payments_collection()
     orders_collection = get_orders_collection()
+    notifications_collection = get_notifications_collection()
 
     # Check if payment exists
     payment = payments_collection.find_one({
@@ -194,15 +240,27 @@ async def verify_payment(
         }}
     )
 
+    # Create notification for payment verification
+    background_tasks.add_task(
+        create_payment_notification,
+        user_id=current_user.id,
+        order_id=payment["order_id"],
+        payment_status=payment_status,
+        reference=reference,
+        notifications_collection=notifications_collection
+    )
+
     return {
         "success": True,
         "status": payment_status,
         "data": data["data"]
     }
 
-
 @router.get("/paystack/callback")
-async def paystack_callback(request: Request) -> Any:
+async def paystack_callback(
+    request: Request,
+    background_tasks: BackgroundTasks
+) -> Any:
     """
     Handle Paystack callback
     """
@@ -235,6 +293,7 @@ async def paystack_callback(request: Request) -> Any:
     # Update payment and order status
     payments_collection = get_payments_collection()
     orders_collection = get_orders_collection()
+    notifications_collection = get_notifications_collection()
 
     now = datetime.utcnow()
     payment_status = "PAID" if data["data"]["status"] == "success" else "FAILED"
@@ -256,6 +315,18 @@ async def paystack_callback(request: Request) -> Any:
             "updated_at": now
         }}
     )
+
+    # Create notification for payment callback
+    payment = payments_collection.find_one({"reference": reference})
+    if payment:
+        background_tasks.add_task(
+            create_payment_notification,
+            user_id=payment["user_id"],
+            order_id=payment["order_id"],
+            payment_status=payment_status,
+            reference=reference,
+            notifications_collection=notifications_collection
+        )
 
     # Redirect to frontend
     return {

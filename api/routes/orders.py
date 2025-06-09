@@ -7,15 +7,54 @@ from core.database import (
     get_menu_items_collection,
     get_addresses_collection,
     get_users_collection,
-    get_deliveries_collection
+    get_deliveries_collection,
+    get_notifications_collection
 )
 from schemas.order import Order, OrderCreate, OrderUpdate, OrderDetail, OrderStatus, PaymentStatus
-from api.deps import get_current_user, get_current_admin_user
+from schemas.notification import NotificationCreate, NotificationType
 from schemas.user import UserInDB
+from api.deps import get_current_user, get_current_admin_user
 from datetime import datetime
 
 router = APIRouter()
 
+def create_order_notification(
+    user_id: str,
+    order_id: str,
+    status: OrderStatus,
+    notifications_collection: Any
+):
+    """
+    Helper function to create a notification for order-related events
+    """
+    status_messages = {
+        OrderStatus.PENDING: ("Order Received", "Your order #{order_id} has been received and is pending confirmation."),
+        OrderStatus.CONFIRMED: ("Order Confirmed", "Your order #{order_id} has been confirmed and is being prepared."),
+        OrderStatus.PREPARING: ("Order Preparing", "Your order #{order_id} is being prepared."),
+        OrderStatus.READY: ("Order Ready", "Your order #{order_id} is ready for delivery."),
+        OrderStatus.EN_ROUTE: ("Order En Route", "Your order #{order_id} is on its way!"),
+        OrderStatus.DELIVERED: ("Order Delivered", "Your order #{order_id} has been delivered successfully."),
+        OrderStatus.CANCELLED: ("Order Cancelled", "Your order #{order_id} has been cancelled.")
+    }
+
+    title, message = status_messages.get(status, ("Order Update", f"Your order #{order_id} has an update: {status.value}"))
+    message = message.format(order_id=order_id)
+
+    notification_data = NotificationCreate(
+        user_id=user_id,
+        title=title,
+        message=message,
+        type=NotificationType.ORDER,
+        order_id=order_id,
+        is_read=False
+    )
+
+    now = datetime.utcnow()
+    notifications_collection.insert_one({
+        **notification_data.dict(),
+        "created_at": now,
+        "updated_at": now
+    })
 
 @router.post("/", response_model=Order, status_code=status.HTTP_201_CREATED)
 async def create_order(
@@ -29,6 +68,7 @@ async def create_order(
     carts_collection = get_carts_collection()
     menu_items_collection = get_menu_items_collection()
     addresses_collection = get_addresses_collection()
+    notifications_collection = get_notifications_collection()
 
     # Check if cart exists and belongs to user
     try:
@@ -144,6 +184,14 @@ async def create_order(
     result = orders_collection.insert_one(order_data)
     order_id = result.inserted_id
 
+    # Create notification for order creation
+    create_order_notification(
+        user_id=current_user.id,
+        order_id=str(order_id),
+        status=OrderStatus.PENDING,
+        notifications_collection=notifications_collection
+    )
+
     # Clear cart after order is created
     carts_collection.update_one(
         {"_id": ObjectId(order_in.cart_id)},
@@ -155,7 +203,6 @@ async def create_order(
     created_order["_id"] = str(created_order["_id"])
 
     return created_order
-
 
 @router.get("/", response_model=List[Order])
 async def get_user_orders(
@@ -183,7 +230,6 @@ async def get_user_orders(
         order["_id"] = str(order["_id"])
 
     return orders
-
 
 @router.get("/{order_id}", response_model=OrderDetail)
 async def get_order_detail(
@@ -244,7 +290,6 @@ async def get_order_detail(
 
     return order
 
-
 @router.put("/{order_id}/cancel", response_model=Order)
 async def cancel_order(
         order_id: str,
@@ -254,6 +299,7 @@ async def cancel_order(
     Cancel an order
     """
     orders_collection = get_orders_collection()
+    notifications_collection = get_notifications_collection()
 
     # Check if order exists and belongs to user
     try:
@@ -290,12 +336,19 @@ async def cancel_order(
         }}
     )
 
+    # Create notification for order cancellation
+    create_order_notification(
+        user_id=current_user.id,
+        order_id=order_id,
+        status=OrderStatus.CANCELLED,
+        notifications_collection=notifications_collection
+    )
+
     # Get updated order
     updated_order = orders_collection.find_one({"_id": ObjectId(order_id)})
     updated_order["_id"] = str(updated_order["_id"])
 
     return updated_order
-
 
 @router.get("/admin/orders", response_model=List[Order])
 async def get_all_orders(
@@ -328,7 +381,6 @@ async def get_all_orders(
 
     return orders
 
-
 @router.put("/admin/{order_id}/status", response_model=Order)
 async def update_order_status(
         order_id: str,
@@ -339,6 +391,7 @@ async def update_order_status(
     Update order status (admin only)
     """
     orders_collection = get_orders_collection()
+    notifications_collection = get_notifications_collection()
 
     # Check if order exists
     try:
@@ -363,6 +416,14 @@ async def update_order_status(
             "status": status.value,
             "updated_at": now
         }}
+    )
+
+    # Create notification for status update
+    create_order_notification(
+        user_id=order["user_id"],
+        order_id=order_id,
+        status=status,
+        notifications_collection=notifications_collection
     )
 
     # Get updated order
