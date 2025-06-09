@@ -1,3 +1,5 @@
+import os
+
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from typing import Any, Dict
 from core.config import settings
@@ -10,6 +12,12 @@ from datetime import datetime
 import secrets
 
 router = APIRouter()
+from dotenv import load_dotenv
+
+load_dotenv()
+
+
+PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY")
 
 
 @router.post("/paystack/initialize")
@@ -66,7 +74,7 @@ async def initialize_payment(
                 }
             },
             headers={
-                "Authorization": f"Bearer {settings.PAYSTACK_SECRET_KEY}",
+                "Authorization": f"Bearer {PAYSTACK_SECRET_KEY}",
                 "Content-Type": "application/json"
             }
         )
@@ -146,7 +154,7 @@ async def verify_payment(
         response = await client.get(
             f"https://api.paystack.co/transaction/verify/{reference}",
             headers={
-                "Authorization": f"Bearer {settings.PAYSTACK_SECRET_KEY}"
+                "Authorization": f"Bearer {PAYSTACK_SECRET_KEY}"
             }
         )
 
@@ -212,7 +220,7 @@ async def paystack_callback(request: Request) -> Any:
         response = await client.get(
             f"https://api.paystack.co/transaction/verify/{reference}",
             headers={
-                "Authorization": f"Bearer {settings.PAYSTACK_SECRET_KEY}"
+                "Authorization": f"Bearer {PAYSTACK_SECRET_KEY}"
             }
         )
 
