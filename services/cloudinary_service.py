@@ -1,17 +1,25 @@
+import os
+
 import cloudinary
 import cloudinary.uploader
 from core.config import settings
 import logging
 from typing import Optional, Dict, Any
 import base64
+from dotenv import load_dotenv
+
+load_dotenv()
 
 logger = logging.getLogger(__name__)
+CLOUDINARY_CLOUD_NAME=os.getenv("CLOUDINARY_CLOUD_NAME")
+CLOUDINARY_API_KEY=os.getenv("CLOUDINARY_API_KEY")
+CLOUDINARY_API_SECRET=os.getenv("CLOUDINARY_API_SECRET")
 
 # Configure Cloudinary
 cloudinary.config(
-    cloud_name=settings.CLOUDINARY_CLOUD_NAME,
-    api_key=settings.CLOUDINARY_API_KEY,
-    api_secret=settings.CLOUDINARY_API_SECRET,
+    cloud_name=CLOUDINARY_CLOUD_NAME,
+    api_key=CLOUDINARY_API_KEY,
+    api_secret=CLOUDINARY_API_SECRET,
     secure=True
 )
 
