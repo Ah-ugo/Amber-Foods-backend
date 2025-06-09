@@ -2,7 +2,7 @@ from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from core.config import settings
 from core.database import mongodb
-from api.routes import auth, users, menu, orders, cart, payments, delivery, addresses, reviews
+from api.routes import auth, users, menu, orders, cart, payments, delivery, addresses, reviews, notifications
 import logging
 
 # Configure logging
@@ -37,6 +37,8 @@ app.include_router(payments.router, prefix=f"{settings.API_V1_STR}/payments", ta
 app.include_router(delivery.router, prefix=f"{settings.API_V1_STR}/delivery", tags=["Delivery"])
 app.include_router(addresses.router, prefix=f"{settings.API_V1_STR}/addresses", tags=["Addresses"])
 app.include_router(reviews.router, prefix=f"{settings.API_V1_STR}/reviews", tags=["Reviews"])
+
+app.include_router(notifications.router, prefix=f"{settings.API_V1_STR}/notifications", tags=["Notifications"])
 
 @app.on_event("startup")
 async def startup_db_client():
