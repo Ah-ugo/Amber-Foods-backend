@@ -67,7 +67,7 @@ async def initialize_payment(
                 "email": current_user.email,
                 "amount": int(order["total_amount"] * 100),  # Amount in kobo (smallest currency unit)
                 "reference": reference,
-                "callback_url": f"{settings.BASE_URL}/api/payments/paystack/callback",
+                "callback_url": f"https://amberfoods.onrender.com/api/payments/paystack/callback",
                 "metadata": {
                     "order_id": order_id,
                     "user_id": current_user.id
